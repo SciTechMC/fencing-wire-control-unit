@@ -4,7 +4,7 @@ import serial.tools.list_ports
 import time
 
 # SET THIS TO FALSE TO USE REAL ARDUINO
-USE_MOCK = True 
+USE_MOCK = False 
 DB_NAME = "serial_output.db"
 
 def init_db():
