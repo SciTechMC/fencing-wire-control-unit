@@ -1,0 +1,21 @@
+Loop counter *********** 1   ***********
+
+ ------- Line C ------- 
+Output A: 0
+Output B: 0
+Output C: 1
+
+Raw A: 0
+Raw B: 0
+Raw C: 512
+
+Vout C: 2.05 V
+Resistance C: 21.45 Ω
+----------------------
+data:124;C;0;0;1;15;10;512;2.50;21.45;0
+----------------------
+
+---- Short circuit detected: ----
+Raw A: 150
+Raw B: 120
+data:124;A;1;0;0;150;120;0;0;0;1

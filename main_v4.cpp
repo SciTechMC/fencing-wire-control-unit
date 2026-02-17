@@ -46,32 +46,27 @@ int raw_alert = 100;      // Raw level required for alarm
 float R1 = 22;            // Base resistance
 unsigned int loopCounter = 0;
 
-void check_short_circuit(char ignore_line) { // Checks every line for short circuit and sounds the alarm
-  int lines_open = 0;
-  for (int i = 0; i < 3; i++){
-    if (lines[i].rawData >= raw_alert) {
-      lines_open++;
-    }
-  }
-  if (lines_open < 2){
-    return;
-  }
-  FastLED.clear();
-  FastLED.show();
-  Serial.println("---- Short circuit detected: ----"); 
+int check_short_circuit() {
+  int lines_shorted = 0;
   for (int i = 0; i < 3; i++) {
     if (lines[i].rawData >= raw_alert) {
-      Serial.println("Raw " + String(lines[i].letter) + ": " + String(lines[i].rawData));
+      lines_shorted++;
     }
   }
+
+  // If less than 2 lines, it's not a cross-line short circuit
+  if (lines_shorted < 2) {
+    return 0;
+  }
+
+  // Visual/Audible Alarm logic
+  FastLED.clear();
   for (int j = 0; j < alert_sequences; j++) {
-    for (int i = 0; i < 3; i++){
-      if (lines[i].rawData > raw_alert){
-        int led = lines[i].led;
-        leds[led] = CRGB::Red;
+    for (int i = 0; i < 3; i++) {
+      if (lines[i].rawData > raw_alert) {
+        leds[lines[i].led] = CRGB::Red;
       }
     }
-
     FastLED.show();
     tone(BUZZER, 1000, 500);
     delay(500);
@@ -80,6 +75,30 @@ void check_short_circuit(char ignore_line) { // Checks every line for short circ
     tone(BUZZER, 800, 500);
     delay(500);
   }
+  return lines_shorted;
+}
+
+char buffer[80];
+
+void print_python_data(int line, int shortStatus) {
+  char vStr[7], rStr[7];
+  dtostrf(lines[line].Vout, 4, 2, vStr);
+  dtostrf(lines[line].resistance, 4, 2, rStr);
+
+  sprintf(buffer, "data:%u;%c;%d;%d;%d;%d;%d;%d;%s;%s;%d",
+    loopCounter,
+    lines[line].letter,
+    lines[LINE_A].digitalData,
+    lines[LINE_B].digitalData,
+    lines[LINE_C].digitalData,
+    lines[LINE_A].rawData,
+    lines[LINE_B].rawData,
+    lines[LINE_C].rawData,
+    vStr,
+    rStr,
+    shortStatus
+  );
+  Serial.println(buffer);
 }
 
 void print_data(int line){ // Prints the current read data from global variables
@@ -145,12 +164,12 @@ void update_led(){ // Updates all LEDs based on the resistance value
 }
 
 void setup() {
-  pinMode(lines[LINE_A].digitalPin, OUTPUT);  // output trigger FET transistor A
-  pinMode(lines[LINE_B].digitalPin, OUTPUT);  // output trigger FET transistor B
-  pinMode(lines[LINE_C].digitalPin, OUTPUT);  // output trigger FET transistor C
-  pinMode(BUZZER, OUTPUT);  // BUZZER
+  pinMode(lines[LINE_A].digitalPin, OUTPUT);
+  pinMode(lines[LINE_B].digitalPin, OUTPUT);
+  pinMode(lines[LINE_C].digitalPin, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
 
-  Serial.begin(9600);
+  Serial.begin(57600);
   FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS);  //Initialiseer de FastLED bibliotheek
   FastLED.setBrightness(BRIGHTNESS);    
   
@@ -175,25 +194,28 @@ void setup() {
 void loop() {
   Serial.println(" ");
   Serial.print("*********** Loop: " + String(loopCounter) + " **********");
-  if (read_c)
-  {
+if (read_c) {
     read_data(LINE_C);
     calculate_resistance(LINE_C);
+    int statusC = check_short_circuit();
     print_data(LINE_C);
-    check_short_circuit('C');
+    print_python_data(LINE_C, statusC);
   }
   if (read_b) {
     read_data(LINE_B);
     calculate_resistance(LINE_B);
+    int statusB = check_short_circuit();
     print_data(LINE_B);
-    check_short_circuit('B');
+    print_python_data(LINE_B, statusB);
   }
   if (read_a) {
     read_data(LINE_A);
     calculate_resistance(LINE_A);
+    int statusA = check_short_circuit();
     print_data(LINE_A);
-    check_short_circuit('A');
+    print_python_data(LINE_A, statusA);
   }
+  
   update_led();
   loopCounter++;
 }
