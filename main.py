@@ -1,105 +1,112 @@
 import serial
-import serial.tools.list_ports
 import sqlite3
+import serial.tools.list_ports
+import time
 
+# SET THIS TO FALSE TO USE REAL ARDUINO
+USE_MOCK = True 
 DB_NAME = "serial_output.db"
 
-def select_com_port():
-    ports = serial.tools.list_ports.comports()
-    
-    if not ports:
-        print("Error: No COM ports detected.")
-        return None
+def init_db():
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                loopcount INTEGER,
+                active_line VARCHAR(1),
+                digi_A INTEGER, digi_B INTEGER, digi_C INTEGER,
+                raw_A INTEGER, raw_B INTEGER, raw_C INTEGER,
+                vout REAL, resistance REAL, short_circuit INTEGER
+            )
+        ''')
 
-    # If only one port is found, use it automatically
-    if len(ports) == 1:
-        port_name = ports[0].device
-        print(f"Single port detected: {port_name}")
-        return port_name
-
-    # If multiple ports are found, let the user choose
-    print("Multiple COM ports detected:")
-    for i, port in enumerate(ports):
-        print(f"{i}: {port.device} [{port.description}]")
-    
+def clear_db():
     try:
-        choice = int(input(f"Select port index (0-{len(ports)-1}): "))
-        return ports[choice].device
-    except (ValueError, IndexError):
-        print("Invalid selection.")
-        return None
+        with sqlite3.connect(DB_NAME) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM data")
+            cursor.execute("DELETE FROM sqlite_sequence WHERE name='data'")
+            conn.commit()
+            print("--- DATABASE CLEARED ---")
+    except Exception as e:
+        print(f"Error clearing database: {e}")
 
-def init_db(db_name="fencing_data.db"):
-    """Initializes the SQLite database based on the finalized schema."""
-    conn = sqlite3.connect(db_name)
-    cursor = conn.cursor()
-    
-    # Create table based on Image 3 layout
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            loopcount INTEGER,
-            active_line VARCHAR(1),
-            digi_A INTEGER,
-            digi_B INTEGER,
-            digi_C INTEGER,
-            raw_A INTEGER,
-            raw_B INTEGER,
-            raw_C INTEGER,
-            vout REAL,
-            resistance REAL,
-            short_circuit INTEGER
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-
-def process_output(cursor, line):
+def process_to_db(cursor, line):
     if not line.startswith("data:"):
-        return 
+        print(f"[Arduino Info]: {line}")
+        return
 
     try:
         payload = line.split(":", 1)[1]
-        data = payload.split(";")
-        
-        if len(data) != 11:
-            print(f"Skipping malformed line (Length {len(data)}): {line}")
-            return
-
-        cursor.execute("""
-            INSERT INTO data(
-                loopcount, active_line, 
-                digi_A, digi_B, digi_C, 
-                raw_A, raw_B, raw_C, 
-                vout, resistance, short_circuit
-            )
-            VALUES(?,?,?,?,?,?,?,?,?,?,?)
-        """, data)
-        
+        data_points = payload.split(";")
+        if len(data_points) == 11:
+            cursor.execute("""
+                INSERT INTO data(loopcount, active_line, digi_A, digi_B, digi_C, 
+                                 raw_A, raw_B, raw_C, vout, resistance, short_circuit)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """, data_points)
     except Exception as e:
-        print(f"Error processing line: {e}")
+        print(f"Error: {e}")
+
+def wait_for_port():
+    """Pings the system until a COM port is found."""
+    while True:
+        ports = list(serial.tools.list_ports.comports())
+        if not ports:
+            # \r and end="" keep the message on one line so it doesn't spam the console
+            print("\rScanning for Arduino... (Plug it in or press Ctrl+C)", end="", flush=True)
+            time.sleep(1)
+            continue
+        
+        print("\n\nPorts found:")
+        for i, p in enumerate(ports):
+            print(f"{i}: {p.device} [{p.description}]")
+        
+        if len(ports) == 1:
+            print(f"Only one port found. Auto-selecting {ports[0].device}...")
+            return ports[0].device
+            
+        try:
+            idx = input("\nSelect Port Index (or press Enter to rescan): ")
+            if idx == "": continue
+            return ports[int(idx)].device
+        except (ValueError, IndexError):
+            print("Invalid selection. Rescanning...")
 
 if __name__ == "__main__":
-    init_db(DB_NAME)
-    selected_port = select_com_port()
+    init_db()
     
-    if selected_port:
-        try:
-            # Keep one connection open for the duration of the script
-            conn = sqlite3.connect(DB_NAME)
-            cursor = conn.cursor()
+    choice = input("Clear existing database data? (y/n): ").lower().strip()
+    if choice == 'y':
+        clear_db()
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    try:
+        if USE_MOCK:
+            from mock_serial import MockSerial
+            ser = MockSerial()
+            print("--- RUNNING MOCK SERIAL ---")
+        else:
+            port_name = wait_for_port()
+            ser = serial.Serial(port_name, 57600, timeout=1)
+            print(f"--- CONNECTED TO {port_name} ---")
+
+        while True:
+            raw = ser.readline()
+            chunk = raw.decode('utf-8', errors='replace').strip()
             
-            with serial.Serial(selected_port, 115200, timeout=1) as ser:
-                print(f"Connected to {selected_port}. Reading data...")
-                while True:
-                    line = ser.readline().decode('utf-8', errors='replace').strip()
-                    if line:
-                        print(line)
-                        process_output(cursor, line)
-                        conn.commit() # Commit frequently or every X lines
-        except KeyboardInterrupt:
-            print("\nClosing...")
-        finally:
-            if 'conn' in locals():
-                conn.close()
+            if chunk:
+                for line in chunk.split('\n'):
+                    process_to_db(cursor, line.strip())
+                
+                conn.commit()
+                
+    except KeyboardInterrupt:
+        print("\nStopping program...")
+    except serial.SerialException as e:
+        print(f"\nSerial error (Hardware unplugged?): {e}")
+    finally:
+        if 'conn' in locals():
+            conn.close()
